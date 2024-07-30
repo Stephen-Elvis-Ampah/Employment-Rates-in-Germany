@@ -1,0 +1,7 @@
+\frametitle{Correlation Matrix of Numeric Variables}
+\begin{figure}
+\begin{subfigure}[b]{1\textheight}
+\includegraphics{S_E_Ampah_QRE-plot-Correlation-Matrix}
+\end{subfigure}
+% \caption{Correlation Matrix of Numeric Variables}
+\end{figure}

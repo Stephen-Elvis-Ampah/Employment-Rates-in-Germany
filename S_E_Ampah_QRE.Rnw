@@ -1,0 +1,1225 @@
+
+\documentclass[10pt]{beamer}
+\mode<presentation>
+{
+  \usetheme{Warsaw}    
+  \usecolortheme{seahorse} 
+ \usefonttheme{serif}
+ \setbeamersize{text margin left=10mm,text margin right=10mm}
+ \setbeamertemplate{headline}{}
+}
+
+
+% Display formulas and symbols
+%%---------------------------------
+\usepackage{amsmath}
+
+% Graphics, subfigures, captions (+ subcaptions)
+%%---------------------------------
+\usepackage{graphicx}
+\usepackage{subcaption}
+\usepackage{caption}
+
+% Tables
+%%---------------------------------
+\usepackage{tabularx}
+\usepackage{booktabs}
+
+% Bibliography
+%%---------------------------------
+\usepackage[backend=bibtex,
+            sortcites=true,
+            sorting=nyt,
+            citetracker=false,
+            %ibidtracker=false,
+            style=authoryear,
+            %doi=true,
+            %isbn=false,
+            giveninits=true,
+            uniquename=init,
+            maxnames=3]{biblatex}
+            
+% Reduce fontsize of references
+\renewcommand*{\bibfont}
+
+% Load bibliography
+\addbibresource{references.bib}
+
+%%---------------------------------
+\title{Explore the multifaceted determinants of regional employment rates in Germany}
+\subtitle{\textit{How do economic performance, labor market dynamics, educational attainment, and industry composition affect regional employment rates in Germany?}} % \textbf{} for bold text...
+\author{Stephen Elvis Ampah \href{mailto:elvis.ampah@tu-dortmund.de}{elvis.ampah@tu-dortmund.de}}
+\institute{Technische Universität Dortmund - Ruhr Alliance, Germany}
+\date{\today}
+
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}{
+    \leavevmode%
+    \hbox{%
+    \begin{beamercolorbox}[wd=.5\paperwidth,ht=2.25ex,dp=1ex,left]{author in head/foot}%
+        \usebeamerfont{author in head/foot}\hspace*{2ex}Stephen Elvis Ampah \hfill \texttt{\href{mailto:elvis.ampah@tu-dortmund.de}{elvis.ampah@tu-dortmund.de}}\hspace*{2ex}
+    \end{beamercolorbox}%
+    \begin{beamercolorbox}[wd=.5\paperwidth,ht=2.25ex,dp=1ex,right]{title in head/foot}%
+        \usebeamerfont{title in head/foot}\insertframenumber{} / \inserttotalframenumber\hspace*{2ex}
+    \end{beamercolorbox}}%
+    \vskip0pt%
+}
+
+% Here starts the actual presentation + slides
+%%---------------------------------
+%%---------------------------------
+
+\begin{document}
+\SweaveOpts{concordance=TRUE}
+
+<<packages, eval=T, echo=F, warning=F, message=F>>=
+library(car)
+library(corrplot)
+library(dplyr)
+library(e1071)
+library(ggplot2)
+library(ggspatial)
+library(lmtest)
+library(mice)
+library(prettymapr)
+library(RColorBrewer)
+library(readxl)
+library(reshape2)
+library(sf)
+library(spdep)
+library(spatialreg)
+library(splm)
+library(tidyverse)
+library(viridis)
+@
+
+
+<<setup-and-import, eval=T, echo=F, include=FALSE, warning=F, message=F>>=
+setwd("/Users/stephenampah/Documents/SP/Employment_Rate")
+inkar_data_from_website <- read_excel("inkar-2.xls")
+inkar <- inkar_data_from_website
+@
+
+% \section{Data Manipulation}
+% Data manipulation is crucial for preparing the dataset for analysis. This includes renaming columns for better clarity and handling data types appropriately.
+
+<<setup-and-import, eval=T, echo=F, include=FALSE, warning=F, message=F>>=
+names(inkar) <- gsub("Kennziffer", "ID", names(inkar))
+names(inkar) <- gsub("Raumeinheit", "Name", names(inkar))
+names(inkar) <- gsub("Erwerbsquote", "ER", names(inkar))
+names(inkar) <- gsub("Schulabgänger mit allgemeiner Hochschulreife", "HEEQ", names(inkar))
+names(inkar) <- gsub("Beschäftigte in wissensintensiven Industrien", "EKII", names(inkar))
+names(inkar) <- gsub("Haushaltseinkommen", "HI", names(inkar))
+names(inkar) <- gsub("Arbeitslosenquote", "UR", names(inkar))
+names(inkar) <- gsub("Bruttoinlandsprodukt in 1000 Euro", "GDP", names(inkar))
+names(inkar) <- gsub("\\.\\.\\..*?$", "", names(inkar))
+@
+
+
+<<setup-and-import, eval=T, echo=F, include=FALSE, warning=F, message=F>>=
+year_info <- as.character(inkar[1, 4:81])
+inkar <- inkar[-1,-3]
+new_names <- c(names(inkar)[1:2], paste(names(inkar)[3:81], year_info, sep = "_"))
+names(inkar) <- new_names
+# print(names(inkar))
+@
+
+
+<<data-conversion, eval=T, echo=F, include=F, warning=F, message=F>>=
+inkar <- inkar %>%
+    mutate(across(.cols = -Name, as.numeric))
+new_inkar <- inkar
+@
+
+% \section{Handling Missing Data}
+% This section deals with identifying and imputing missing data points in the dataset to prepare it for further analysis.
+
+<<missing-data-identification, eval=TRUE, echo=F, include=F, warning=F, message=F>>=
+# Calculate the sum of missing values and print indices of missing data
+sum_missing_values <- sum(is.na(new_inkar))
+# print(paste("Total missing values:", sum_missing_values))
+
+rows_with_missing <- which(apply(new_inkar, 1, function(x) any(is.na(x))))
+cols_with_missing <- which(apply(new_inkar, 2, function(x) any(is.na(x))))
+
+# print(paste("Rows with missing data:", toString(rows_with_missing)))
+# print(paste("Columns with missing data:", toString(cols_with_missing)))
+@
+
+
+<<missing-data-visualization, echo=TRUE, echo=F, fig.cap="Pie chart of missing vs non-missing data points", fig.align='center'>>=
+# Calculate total, missing, and non-missing data points
+total_data_points <- ncol(new_inkar) * nrow(new_inkar)
+missing_data_points <- sum(is.na(new_inkar))
+non_missing_data_points <- total_data_points - missing_data_points
+
+# Create a data frame for visualization
+chart_data <- data.frame(
+  category = c("Missing", "Non-Missing"),
+  count = c(missing_data_points, non_missing_data_points)
+)
+chart_data$percentage <- (chart_data$count / total_data_points) * 100
+
+@
+
+
+<<missing-data-imputation, eval=T, echo=F, include=FALSE, warning=F, message=F>>=
+# Impute missing data using the CART method
+imputed_data <- mice(new_inkar, method="cart", printFlag = FALSE)
+full_data <- complete(imputed_data)
+
+# Assign the imputed dataset for further processing
+final_inkar_data <- full_data
+@
+
+
+% \section{Density and Correlation Analysis}
+% 
+% This section focuses on understanding the distribution of various numeric variables and their interrelationships within the dataset.
+% 
+% <<density-plot-single, echo=TRUE, echo=F, fig=TRUE, fig.cap="Density plot of ER_2021", fig.align='center'>>=
+% plot(density(final_inkar_data$ER_2021), main="Density of ER_2021", xlab="ER_2021 Values", ylab="Density")
+% @
+% 
+% 
+<<define-density-function, echo=F>>=
+plot_all_densities <- function(data, exclude_columns = c("ID")) {
+  numeric_columns <- sapply(data, is.numeric) & !names(data) %in% exclude_columns
+  df_numeric <- data[, numeric_columns]
+
+  num_cols = sum(numeric_columns)
+  layout_dim1 <- ifelse(sqrt(num_cols) > 2, ceiling(sqrt(num_cols)), 2)
+  layout_dim2 <- ceiling(num_cols / layout_dim1)
+
+  par(mfrow=c(layout_dim1, layout_dim2), mar=c(2, 2, 2, 2))
+  for (column_name in names(df_numeric)) {
+    plot_data <- na.omit(df_numeric[[column_name]])
+    if (length(plot_data) > 1) {
+      plot(density(plot_data), main=column_name, xlab=column_name, ylab="Density")
+    } else {
+      plot(0, type="n", main=column_name, xlab="", ylab="")
+      text(0, 0, "Not enough data")
+    }
+  }
+}
+@
+
+
+% <<apply-density-function, echo=FALSE, fig=TRUE, fig.cap="Density plots for numeric variables", fig.align='center'>>=
+% plot_all_densities(final_inkar_data)
+% @
+
+
+% \section{Data Transformation and Re-Imputation}
+% 
+% This section discusses the log transformation of specific variables in the dataset, followed by a re-imputation process to handle any newly introduced missing values resulting from the transformation.
+
+<<log-transformation, eval=T, echo=FALSE, include=F, warning=F, message=F>>=
+# Apply a log transformation to selected columns if values are positive
+log_final_inkar_data <- final_inkar_data %>%
+    mutate(across(.cols = 3:80, ~ifelse(. > 0, log(.), NA)))  # Replace non-positive values with NA
+@
+
+
+<<Re-imputation, eval=T, echo=FALSE, include=FALSE, warning=F, message=F>>=
+# Re-impute missing data using the CART method on the log-transformed data
+imputed_data <- mice(log_final_inkar_data, method="cart", printFlag = FALSE)
+log_final_inkar_data <- complete(imputed_data)
+@
+
+% 
+% \section{Regression Analysis}
+% 
+% This section presents the Ordinary Least Squares (OLS) regression analysis conducted for each year from 2009 to 2021. The models predict the Employment Rate ('ER') using various predictors across different years.
+% Each model predicts 'ER' (Employment Rate) using variables 'HEEQ' (Higher Education Enrollment Quota), 'EKII' (Employees in Knowledge-Intensive Industries), 'HI' (Household Income),
+% 'UR' (Unemployment Rate), and 'GDP' (Gross Domestic Product).
+
+<<Performing OLS Regression for Each Year, eval=T, echo=F, include=FALSE, warning=F, message=F>>=
+  OLS2021 <- lm(ER_2021 ~ HEEQ_2021 + EKII_2021 + HI_2021 + UR_2021 + GDP_2021, data=log_final_inkar_data)
+  # summary(OLS2021)
+
+  OLS2020 <- lm(ER_2020 ~ HEEQ_2020 + EKII_2020 + HI_2020 + UR_2020 + GDP_2020, data=log_final_inkar_data)
+  # summary(OLS2020)
+
+  OLS2019 <- lm(ER_2019 ~ HEEQ_2019 + EKII_2019 + HI_2019 + UR_2019 + GDP_2019, data=log_final_inkar_data)
+  # summary(OLS2019)
+
+  OLS2018 <- lm(ER_2018 ~ HEEQ_2018 + EKII_2018 + HI_2018 + UR_2018 + GDP_2018, data=log_final_inkar_data)
+  # summary(OLS2018)
+
+  OLS2017 <- lm(ER_2017 ~ HEEQ_2017 + EKII_2017 + HI_2017 + UR_2017 + GDP_2017, data=log_final_inkar_data)
+  # summary(OLS2017)
+
+  OLS2016 <- lm(ER_2016 ~ HEEQ_2016 + EKII_2016 + HI_2016 + UR_2016 + GDP_2016, data=log_final_inkar_data)
+  # summary(OLS2016)
+
+  OLS2015 <- lm(ER_2015 ~ HEEQ_2015 + EKII_2015 + HI_2015 + UR_2015 + GDP_2015, data=log_final_inkar_data)
+  # summary(OLS2015)
+
+  OLS2014 <- lm(ER_2014 ~ HEEQ_2014 + EKII_2014 + HI_2014 + UR_2014 + GDP_2014, data=log_final_inkar_data)
+  # summary(OLS2014)
+
+  OLS2013 <- lm(ER_2013 ~ HEEQ_2013 + EKII_2013 + HI_2013 + UR_2013 + GDP_2013, data=log_final_inkar_data)
+  # summary(OLS2013)
+
+  OLS2012 <- lm(ER_2012 ~ HEEQ_2012 + EKII_2012 + HI_2012 + UR_2012 + GDP_2012, data=log_final_inkar_data)
+  # summary(OLS2012)
+
+  OLS2011 <- lm(ER_2011 ~ HEEQ_2011 + EKII_2011 + HI_2011 + UR_2011 + GDP_2011, data=log_final_inkar_data)
+  # summary(OLS2011)
+
+  OLS2010 <- lm(ER_2010 ~ HEEQ_2010 + EKII_2010 + HI_2010 + UR_2010 + GDP_2010, data=log_final_inkar_data)
+  # summary(OLS2010)
+
+  OLS2009 <- lm(ER_2009 ~ HEEQ_2009 + EKII_2009 + HI_2009 + UR_2009 + GDP_2009, data=log_final_inkar_data)
+  # summary(OLS2009)
+@
+
+
+% \section{Variance Inflation Factor (VIF) Analysis}
+% 
+% To ensure the reliability of our models, the Variance Inflation Factor (VIF) was calculated for each, helping to identify any significant multicollinearity issues that could impact our interpretations.
+
+<<vif-calculation, eval=TRUE, echo=FALSE, include=FALSE, warning=FALSE, message=FALSE>>=
+vif_results <- list(
+  VIF_2021 = vif(OLS2021),
+  VIF_2020 = vif(OLS2020),
+  VIF_2019 = vif(OLS2019),
+  VIF_2018 = vif(OLS2018),
+  VIF_2017 = vif(OLS2017),
+  VIF_2016 = vif(OLS2016),
+  VIF_2015 = vif(OLS2015),
+  VIF_2014 = vif(OLS2014),
+  VIF_2013 = vif(OLS2013),
+  VIF_2012 = vif(OLS2012),
+  VIF_2011 = vif(OLS2011),
+  VIF_2010 = vif(OLS2010),
+  VIF_2009 = vif(OLS2009)
+)
+
+# # Optionally print VIF results or handle them in another way if needed
+# print(vif_results)
+@
+
+% \section{Spatial Data Integration and Visualization}
+% 
+% This section focuses on integrating spatial data with our main dataset and visualizing the results to provide geographic insights into the Employment Rate (ER) data for the year 2021.
+% 
+<<read-merge-spatial, eval=T, echo=FALSE, include =FALSE, warning=FALSE, message=FALSE>>=
+# Read shapefile
+shapefile <- sf::st_read("/Users/stephenampah/Documents/Serminar/vg2500/VG2500_KRS.shp", quiet = TRUE)
+
+# Convert 'ARS' column to numeric for proper merging
+shapefile$ARS <- as.numeric(shapefile$ARS)
+
+# Convert spatial data to a data frame for merging
+shapedata <- data.frame(shapefile)
+
+# Merge with main dataset
+geoinkar <- merge(shapedata, final_inkar_data, by.x="ARS", by.y="ID", all.x=TRUE)
+
+# Convert back to spatial dataframe for geographic operations
+geoinkar <- st_as_sf(geoinkar)
+@
+
+
+% \section{Data Transformation for Spatiotemporal Modeling}
+% 
+% This section details the transformation of our dataset into a format suitable for spatiotemporal modeling, focusing on converting the dataset from wide to long format and manipulating variable names to extract time-related information.
+% 
+<<Transform-to-long, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Convert the dataset from wide to long format, specifying which columns to melt
+log_final_inkar_long <- pivot_longer(log_final_inkar_data, cols=ER_2009:GDP_2021, names_to="varname", values_to="value")
+@
+
+
+<<extract-year, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Define a function to extract the year from the variable names
+right <- function(text, num_char) {
+    substr(text, nchar(text)-(num_char-1), nchar(text))
+}
+
+# Create a new 'year' column by extracting year from 'varname'
+log_final_inkar_long$year <- right(log_final_inkar_long$varname, 4)
+log_final_inkar_long$year <- as.numeric(log_final_inkar_long$year)
+
+# Clean up the 'varname' column to remove the year suffix
+log_final_inkar_long <- log_final_inkar_long %>%
+    mutate(varname = gsub("_\\d{4}$", "", varname))
+@
+
+
+<<transform-back-to-wide, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Convert the dataset back to wide format after the transformations
+log_final_inkar_wider <- pivot_wider(log_final_inkar_long,names_from = c("varname"))
+# print(log_final_inkar_wider)
+@
+
+
+% \section{Summary Statistics Calculation}
+% 
+% This section details the computation of various summary statistics for selected columns of our dataset. These statistics include mean, median, standard deviation, standard error, minimum, maximum, and quantiles.
+% 
+<<calculate-summary-stats, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Select the columns of interest (assuming columns 4 to 9 as mentioned)
+  selected_data <- log_final_inkar_wider[4:9]
+  
+  # Define a function to calculate the required statistics
+  calculate_statistics <- function(x) {
+    data <- na.omit(x)
+    mean_val <- mean(data)
+    median_val <- median(data)
+    sd_val <- sd(data)
+    min_val <- min(data)
+    max_val <- max(data)
+    q25 <- quantile(data, 0.25)
+    q75 <- quantile(data, 0.75)
+    range_val <- max_val - min_val
+    skewness_val <- skewness(data)
+    
+    return(c(Mean = mean_val, Median = median_val, SD = sd_val, 
+             Min = min_val, Max = max_val, Q25 = q25, Q75 = q75, Range = range_val, 
+             Skewness = skewness_val))
+  }
+  
+  # Apply the function to each column and convert the result to a data frame
+  summary_statistics <- as.data.frame(t(sapply(selected_data, calculate_statistics)))
+  
+  # # Display the summary statistics
+  # print(summary_statistics)
+@
+
+<<correlation matrix, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+  corr_results <- cor(selected_data, method = "pearson", use = "complete.obs")
+  # print(corr_results)
+  
+# Melt the correlation matrix for ggplot2 usage
+  melted_cor_matrix <- melt(corr_results)
+  
+@
+
+
+% \section{Spatial Model Preparations}
+% 
+% This section focuses on preparing the spatial data for subsequent analysis, including creating neighbors lists and constructing spatial weights matrices, which are crucial for spatial econometrics.
+% 
+<<load-prepare-spatial-data, eval=T, echo=FALSE, include =FALSE, warning=F, message=F>>=
+# Load the shapefile for spatial analysis
+krs_shp_mtrx <- sf::st_read("/Users/stephenampah/Documents/Serminar/vg2500/VG2500_KRS.shp", quiet = TRUE)
+
+# Build a neighbours list based on shared boundaries
+krs_mtrx <- poly2nb(krs_shp_mtrx)
+
+# Convert to sf object
+krs_sf <- st_as_sf(krs_shp_mtrx, sf_column_name = "geometry")
+
+# Transform CRS to Web Mercator
+krs_sf <- st_transform(krs_sf, 3857)  
+
+# Extract centroids for plotting
+centroids <- st_centroid(krs_sf)
+points_df <- as.data.frame(st_coordinates(centroids))
+colnames(points_df) <- c("longitude", "latitude")
+
+# Generate connections from the neighbors list
+connections <- do.call(rbind, lapply(1:length(krs_mtrx), function(i) {
+  if (length(krs_mtrx[[i]]) > 0) {
+    data.frame(
+      from_lon = points_df$longitude[i],
+      from_lat = points_df$latitude[i],
+      to_lon = points_df$longitude[krs_mtrx[[i]]],
+      to_lat = points_df$latitude[krs_mtrx[[i]]]
+    )
+  }
+}))
+@
+
+
+<<create-spatial-weights, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Create spatial weights matrix
+krs_w <- nb2listw(krs_mtrx, style="W")
+@
+ 
+% \section{Testing for Spatial Autocorrelation}
+% 
+% This section details the process of checking for spatial autocorrelation using Moran's I test across multiple years. This test helps determine if a spatial econometric model is necessary by identifying patterns of autocorrelation in the residuals of ordinary least squares (OLS) models.
+% 
+<<setup-moran-test, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# List of OLS models from 2009 to 2021
+ols_models <- list(OLS2009, OLS2010, OLS2011, OLS2012, OLS2013, OLS2014, OLS2015, OLS2016, OLS2017, OLS2018, OLS2019, OLS2020, OLS2021)
+years <- 2009:2021
+
+# Initialize a data frame to store Moran's I test results
+if (!exists("moran_results_df") || nrow(moran_results_df) == 0) {
+    moran_results_df <- data.frame(
+      Year = integer(),
+      Moran_I_Statistic = numeric(),
+      P_Value = numeric(),
+      stringsAsFactors = FALSE
+    )
+} else {
+    moran_results_df <- moran_results_df[0,]  # Clear existing data frame if it exists
+}
+@
+
+
+<<perform-moran-test, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Iterate over the OLS models and perform Moran's I test for each
+for (i in seq_along(ols_models)) {
+    model <- ols_models[[i]]
+    year <- years[i]
+
+    # Calculate residuals for the current model
+    residuals_model <- residuals(model)
+
+    # Perform Moran's I test using the spatial weights matrix krs_w
+    moran_result <- moran.test(residuals_model, krs_w)
+
+    # Append the year and results to the data frame
+    moran_results_df <- rbind(moran_results_df, data.frame(
+      Year = year,
+      Statistic = moran_result$estimate["Moran I statistic"],
+      P_Value = moran_result$p.value
+    ))
+}
+# # Print the complete results table to view all Moran's I statistics and p-values
+# print(moran_results_df)
+@
+
+
+<<Lagrange-Multiplier-(LM)-tests, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Perform the robust LM test for a missing spatially lagged dependent variable (LMlag)
+RLMlag_OLS2021 <- lm.LMtests(OLS2021, listw=krs_w, test="RLMlag")
+
+# # Output the results of the LM lag test
+# print(RLMlag_OLS2021)
+
+# Perform the robust LM test for error dependence (RLMerr)
+RLMerr_OLS2021 <- lm.LMtests(OLS2021, listw=krs_w, test="RLMerr")
+
+# # Output the results of the LM error test
+# print(RLMerr_OLS2021)
+@
+% \section{Conclusion}
+% 
+% The Moran's I test results across multiple years indicate the presence of spatial autocorrelation in the residuals of the OLS models. These findings inform the necessity and design of spatial econometric models to account for spatial dependencies. 
+% 
+% 
+% \section{Creating Spatially Lagged Variables}
+% 
+% This section details the creation and processing of spatially lagged variables to account for spatial autocorrelation in the dataset. These variables help in capturing the influence of neighboring observations on each other, which is crucial for spatial analyses.
+
+<<initialize-lagged-data, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Initialize the lagged data frame
+years <- 2009:2021
+variables <- c("HEEQ", "EKII", "HI", "UR", "GDP")
+lagged_variable_names <- paste0("w", expand.grid(variables, years)$Var1, "_", expand.grid(variables, years)$Var2)
+lag_data <- as.data.frame(matrix(rep(0, nrow(log_final_inkar_data) * length(lagged_variable_names)), nrow(log_final_inkar_data), length(lagged_variable_names)))
+names(lag_data) <- lagged_variable_names
+
+# Bind the empty lagged data frame to the original data
+log_final_inkar_data <- cbind(log_final_inkar_data, lag_data)
+@
+
+
+<<compute-spatial-lags, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Handle NA values before calculating spatial lags
+library(spdep)  # Ensure the spdep package is loaded for spatial weights functions
+
+for (var in variables) {
+  for (year in years) {
+    original_col_name <- paste0(var, "_", year)
+    if (original_col_name %in% names(log_final_inkar_data)) {
+      if (any(is.na(log_final_inkar_data[[original_col_name]]))) {
+        mean_value <- mean(log_final_inkar_data[[original_col_name]], na.rm = TRUE)
+        log_final_inkar_data[[original_col_name]][is.na(log_final_inkar_data[[original_col_name]])] <- mean_value
+      }
+    }
+  }
+}
+
+# Compute spatially lagged variables
+for (var in variables) {
+  for (year in years) {
+    original_col_name <- paste0(var, "_", year)
+    lag_col_name <- paste0("w", original_col_name)
+    if (original_col_name %in% names(log_final_inkar_data)) {
+      log_final_inkar_data[[lag_col_name]] <- lag.listw(krs_w, log_final_inkar_data[[original_col_name]], na.action = na.fail)
+    }
+  }
+}
+
+# # Display a summary of the new lagged variables
+# summary(log_final_inkar_data[, lagged_variable_names])
+@
+
+% \section{Conclusion}
+% 
+% Incorporating spatially lagged variables enhances our model's ability to account for spatial dependencies, thereby improving the robustness and accuracy of our spatial analyses. This step is essential in ensuring that our model reflects the real-world spatial processes influencing our variables of interest.
+% 
+% \section{Reformatting Data for Spatiotemporal Analysis}
+% 
+% This section details the reformatting of our dataset to include newly created spatially lagged variables, preparing it for advanced spatiotemporal modeling.
+
+<<transform-to-long-new-vars, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Transform the dataset to long format to include lagged variables
+New_log_final_inkar_long <- pivot_longer(log_final_inkar_data, cols=ER_2009:wGDP_2021, names_to="varname")
+
+# Define a function to extract the year from variable names
+right <- function(text, num_char) {
+    substr(text, nchar(text) - (num_char - 1), nchar(text))
+}
+
+# Create a 'year' column by extracting the year from variable names
+New_log_final_inkar_long$year <- right(New_log_final_inkar_long$varname, 4)
+New_log_final_inkar_long$year <- as.numeric(New_log_final_inkar_long$year)
+
+# Clean up the 'varname' column to remove the year suffix
+New_log_final_inkar_long <- New_log_final_inkar_long %>%
+    mutate(varname = gsub("_\\d{4}$", "", varname))
+@
+
+
+<<retransform-to-wide, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Convert the long format dataset back to wide format
+New_log_final_inkar_wide <- pivot_wider(New_log_final_inkar_long, names_from="varname", values_from="value")
+
+# # Display the first few rows to check the format
+# head(New_log_final_inkar_wide)
+@
+
+
+<<prepare-for-splm, eval=T, echo=F, include =FALSE, warning=F, message=F>>=
+# Reorder the columns to match the requirements for the splm package
+New_log_final_inkar_wide <- New_log_final_inkar_wide[c(1, 3, 2, 4:14)]
+
+# Check if the 'ID' column is sorted in ascending order
+is_sorted_ascending <- !is.unsorted(New_log_final_inkar_wide$ID)
+# print(is_sorted_ascending)
+
+# # Check for any missing values in the dataset
+# any_na <- anyNA(New_log_final_inkar_wide)
+# print(any_na)
+@
+
+% \section{Conclusion}
+% The dataset has been successfully transformed to include spatially lagged variables and formatted for spatiotemporal modeling using the splm package. These steps are critical for ensuring the accuracy and robustness of our forthcoming analyses.
+
+% \section{Spatial Econometric Modeling}
+% This section focuses on fitting spatial econometric models to our data to account for possible spatial autocorrelation. We explore both the Spatial Lag Model (SLM) and the Spatial Error Model (SEM) to evaluate their impacts on the analysis.
+
+<<fit-ols-model, eval=T, echo=FALSE, include =FALSE, warning=F, message=F>>=
+# Fit an OLS model to serve as a baseline
+library(spatialreg)
+OLS_model <- lm(ER ~ HEEQ + EKII + HI + UR + GDP, data=New_log_final_inkar_wide)
+# summary(OLS_model)
+@
+
+
+<<define-spatial-models, eval=T, echo=FALSE, include =FALSE, warning=F, message=F>>=
+# Define the formula for spatial models
+f <- ER ~ HEEQ + EKII + HI + UR + GDP + wHEEQ + wEKII + wHI + wUR + wGDP
+@
+
+
+<<fit-slm, eval=T, echo=FALSE, include =FALSE, warning=F, message=F>>=
+# Fit a Spatial Lag Model (SLM) with individual fixed effects
+slm_model <- spml(f, data = New_log_final_inkar_wide, listw = krs_w,
+                    model = "within", effect = "individual",
+                    lag = TRUE, spatial.error = "none")
+# summary(slm_model)
+@
+
+
+<<fit-sem, eval=T, echo=FALSE, include =FALSE, warning=F, message=F>>=
+# Fit a Spatial Error Model (SEM) with individual fixed effects
+sem_model <- spml(f, data = New_log_final_inkar_wide, listw = krs_w,
+                    model = "within", spatial.error = "b",
+                    effect = "individual", method = "eigen",
+                    lag = FALSE)
+# summary(sem_model)
+@
+
+
+<<calculate-impacts, eval=T, echo=FALSE, include =FALSE, warning=F, message=F>>=
+# Calculate impacts for the Spatial Lag Model (SLM)
+slm_SARimpacts <- spatialreg::impacts(slm_model, listw = krs_w, time = 13)
+# summary(slm_SARimpacts, zstats=T, short=T)
+
+# # Attempt to calculate impacts for the Spatial Error Model (SEM)
+# tryCatch({
+#     sem_SARimpacts <- spatialreg::impacts(sem_model, listw = krs_w, time = 13)
+#     summary(sem_SARimpacts, zstats = TRUE, short = TRUE)
+# }, error = function(e) {
+#     cat("Error in calculating impacts for SEM model: ", e$message, "\n")
+# })
+@
+
+% \section{Conclusion}
+% Spatial econometric models, specifically the SLM and SEM, provide insights into the spatial dependencies within our data. Calculating the impacts of these models helps in understanding the influence of spatial spillovers on the estimated parameters, ensuring a deeper understanding of the underlying spatial processes
+
+% \section{Diagnostic Plots for Spatial Models}
+% This section includes diagnostic plots for the Spatial Lag Model (SLM) and Spatial Error Model (SEM). These plots provide insights into the residuals and fit of the models, which are crucial for evaluating model performance and identifying potential issues.
+
+<<diagnostic-plots, echo=FALSE, fig.cap="Diagnostic plots for Spatial Models", fig.align='center'>>=
+par(mfrow=c(3, 2))  # Set up the plot area to have 3 rows and 2 columns
+
+# Plot residuals for the Spatial Lag Model (SLM)
+plot(residuals(slm_model), type = 'l', main = "Residuals from SLM")
+
+# Plot residuals for the Spatial Error Model (SEM)
+plot(residuals(sem_model), type = 'l', main = "Residuals from SEM")
+
+# Histogram for SLM residuals
+hist(residuals(slm_model), breaks = 30, main = "Histogram of SLM Residuals")
+
+# Histogram for SEM residuals
+hist(residuals(sem_model), breaks = 30, main = "Histogram of SEM Residuals")
+
+# Plotting fitted vs residuals for SLM
+plot(fitted(slm_model), residuals(slm_model), main = "Fitted vs. Residuals for SLM",
+     xlab = "Fitted values", ylab = "Residuals")
+abline(h = 0, col = "red")
+
+# Plotting fitted vs residuals for SEM
+plot(fitted(sem_model), residuals(sem_model), main = "Fitted vs. Residuals for SEM",
+     xlab = "Fitted values", ylab = "Residuals")
+abline(h = 0, col = "blue")
+
+# Reset plotting parameters
+par(mfrow=c(1, 1))  # Reset to default single plot layout
+@
+
+% \section{Conclusion}
+% 
+% The diagnostic plots provide essential visual feedback on the residuals and fit of our spatial econometric models. These visual diagnostics are key to assessing model adequacy, guiding further refinements and validations of the model specifications.
+
+
+% Slide 1
+\begin{frame}[plain]
+\titlepage
+\end{frame}
+
+% Table of Contents
+\begin{frame}{Table of Contents}
+\tableofcontents
+\end{frame}
+
+
+% Slide 2 - Importance of Studying Regional Employment Rates
+\section{Introduction}
+\begin{frame}{Introduction}
+    \setlength{\parskip}{1em}  
+    \textbf{Importance of Studying Regional Employment Rates}
+    \begin{itemize}
+        \item \textbf{Economic Health Indicator:} Employment rates are critical indicators of economic health and labour market performance
+        \item \textbf{Policy Relevance:} Understanding regional variations in employment can guide targeted policy interventions 
+        \item \textbf{Social Implications:} High employment rates are associated with better social outcomes, including reduced poverty and improved quality of life \parencite{moller2010}.
+    \end{itemize}
+\end{frame}
+
+
+% Slide 3 - Research Question
+\begin{frame}{Research Question}
+    \setlength{\parskip}{1em}
+    \textbf{Research Question}
+    \begin{itemize}
+        \item \textbf{} How do economic performance, labour market dynamics, educational attainment, and industry composition affect regional employment rates in Germany?
+    \end{itemize}
+
+    \textbf{Literature}
+    \begin{itemize}
+         \item How elastic is labor demand? A meta-analysis for the German labor market. \textit{Journal for Labour Market Research}, 57(1), 14. \parencite{Popp2023}.
+         \item Another economic miracle? The German labor market and the Great Recession. \textit{IZA Journal of Labor Policy}, 1, 1-21. \parencite{RinneZimmermann2012}.
+    \end{itemize}
+\end{frame}
+
+
+% Slide 4 - Methodology
+\section{Methodology}
+\begin{frame}{Methodology}
+\frametitle{Data Sources}
+    \setlength{\parskip}{1em}
+    \begin{itemize}
+        \item \textbf{INKAR.de}: A comprehensive database provided by the Federal Institute for Research on Building, Urban Affairs, and Spatial Development (BBSR) in Germany. 
+        \item \textbf{Variables}:
+        \begin{itemize}
+            \item \textbf{Employment Rate (ER)}: Proportion of the working-age population that is employed.
+            \item \textbf{Higher Education Enrollment Quota (HEEQ)}: Percentage of the population enrolled in higher education.
+            \item \textbf{Employees in Knowledge-Intensive Industries (EKII)}: Share of employment in sectors requiring advanced knowledge and skills.
+            \item \textbf{Household Income (HI)}: Average income of households.
+            \item \textbf{Unemployment Rate (UR)}: Percentage of the labour force that is unemployed and seeking work.
+            \item \textbf{Gross Domestic Product (GDP)}: Total economic output of a region.
+        \end{itemize}
+    \end{itemize}
+\end{frame}
+
+
+% Slide 5 - Baseline Model
+\begin{frame}{Analytical Approach}
+\frametitle{Baseline Model: Ordinary Least Squares (OLS) Regression}
+    \begin{itemize}
+        \item \textbf{Purpose}: Establish initial relationships between the dependent variable \( ER \) and independent variables \( HEEQ, EKII, HI, UR, GDP \).
+        \item \textbf{Procedure}: Fit an OLS regression model to the data to determine the direct effects of the independent variables on the employment rate.
+        \item \textbf{Formula}:
+        \begin{equation}
+            ER = \beta_0 + \beta_1 HEEQ + \beta_2 EKII + \beta_3 HI + \beta_4 UR + \beta_5 GDP + \epsilon
+        \end{equation}
+        where \( \beta_i \) are parameters to be estimated and \( \epsilon \) is the error term.
+    \end{itemize}
+    \textit{Note: The model formulation follows the guidelines set out in Wooldridge (2012).}
+\end{frame}
+
+
+% Slide 6
+\begin{frame}{Moran's I Test \parencite{moran1950}}
+    \begin{itemize}
+        \item \textbf{Purpose}: Detect spatial patterns and autocorrelation in the residuals of the OLS model.
+        \item \textbf{Formula}:
+        \begin{equation}
+            I = \frac{N}{W} \frac{\sum_{i} \sum_{j} w_{ij} (x_i - \bar{x})(x_j - \bar{x})}{\sum_{i} (x_i - \bar{x})^2}
+        \end{equation}
+        where:
+        \begin{itemize}
+            \item \(N\): Number of observations
+            \item \(W\): Sum of all spatial weights \(w_{ij}\)
+            \item \(x_i\): Value of the variable at location \(i\)
+            \item \(x_j\): Value of the variable at location \(j\)
+            \item \(\bar{x}\): Mean of the variable
+            \item \(w_{ij}\): Spatial weight between location \(i\) and \(j\)
+        \end{itemize}
+        \item \textbf{Result}: Indicated patterns of spatial autocorrelation, suggesting that the employment rates in one district are influenced by those in neighbouring regions.
+    \end{itemize}
+\end{frame}
+
+% Slide 7
+\begin{frame}{Spatial Econometric Models}
+    \begin{itemize}
+        \item \textbf{Spatial Lag Model (SLM) \parencite{anselin1988}}:
+        \begin{itemize}
+            \item \textbf{Purpose}: Account for the dependence of employment rates in neighbouring district.
+            \item \textbf{Method}: Incorporates a spatially lagged dependent variable to capture the influence of neighbouring district' employment rates on the local employment rate.
+            \item \textbf{Equation}:
+            \begin{equation}
+                ER = \rho W ER + X \beta + \epsilon
+            \end{equation}
+            where:
+            \begin{itemize}
+                \item \(ER\): Employment rate in region 
+                \item \(W\): The spatial weights matrix
+                \item \(W ER\): Spatially lagged employment rate
+                \item \(X\): Matrix of independent variables
+                \item \(\beta\): The vector of coefficients for the independent variables
+                \item \(\epsilon\): The vector of error terms
+                \item \(\rho\): Spatial autoregressive coefficient
+            \end{itemize}
+        \end{itemize}
+    \end{itemize}
+\end{frame}
+
+
+% Slide 8
+\begin{frame}{Spatial Econometric Models (Robustness Test)}
+    \begin{itemize}
+     \item \textbf{Spatial Error Model (SEM)}:
+    \begin{itemize}
+        \item \textbf{Purpose}: Account for spatially correlated error terms.
+        \item \textbf{Method}: Adjusts for spatial dependence in the error term, capturing unobserved district factors affecting employment rates.
+        \item \textbf{Equation}:
+        \begin{subequations}
+          \begin{equation}
+              ER = X\beta + u
+          \end{equation}
+          \begin{equation}
+              u = \lambda Wu + \epsilon
+          \end{equation}
+          \end{subequations}
+        where:
+\begin{itemize}
+  \item \( ER \) is the dependent variable vector
+  \item \( X \) is the matrix of independent variables
+  \item \( \beta \) is the vector of coefficients for the independent variables
+  \item \( u \) is the vector of error terms that incorporates spatial autocorrelation
+  \item \( \lambda \) is the coefficient of spatial autocorrelation for the error terms
+  \item \( W \) is the spatial weights matrix
+  \item \( \epsilon \) is the vector of independently and identically distributed (iid) error terms
+\end{itemize}
+    \end{itemize}
+    \item \textit{The robustness of the SEM in comparison to SLM is discussed extensively in Spatial Econometrics \parencites{anselin1988}{elhorst2014}.}
+\end{itemize}
+\end{frame}
+
+
+\section{Descriptive Analysis and Results}
+\begin{frame}{Percentage of missing vs non-missing data points}
+\begin{figure}
+\begin{subfigure}[b]{0.6\textheight}
+<<missing-data-visualization, echo=FALSE, fig=TRUE, fig.cap="Pie chart of missing vs non-missing data points", fig.align='center'>>=
+# Generate a pie chart
+pie_chart <- ggplot(chart_data, aes(x = "", y = percentage, fill = category)) +
+  geom_bar(stat = "identity", width = 1, color = "white") +
+  coord_polar(theta = "y") +
+  scale_fill_manual(values = c("#fc8eac", "#00ccff")) +
+  theme_void() +
+  theme(legend.title = element_blank(), legend.text = element_text(size = 12), legend.position = "bottom") +
+  geom_text(aes(label = sprintf("%s: %.1f%%", category, percentage)), position = position_stack(vjust = 0.5), size = 3.5, color = "white", fontface = "bold")
+print(pie_chart)
+@
+\end{subfigure}
+% \caption{Percentage of missing vs non-missing data points}
+\end{figure}
+\end{frame}
+
+
+\begin{frame}{Density Plots}
+\begin{figure}
+<<apply-density-function, echo=FALSE, fig=TRUE, fig.cap="Density plots for numeric variables", fig.align='center'>>=
+# Assuming 'plot_all_densities' function is defined to plot density plots for your dataset
+plot_all_densities(final_inkar_data)
+@
+\caption{Density plots for numeric variables}
+\end{figure}
+\end{frame}
+
+
+\begin{frame}[fragile]{Employmemt rate in Germany - 2021}
+\begin{figure}
+\begin{subfigure}[b]{1\textheight}
+<<quantile-map-visualization, echo=F, fig=T, fig.align='center'>>=
+# Calculate quantile breaks for 'ER_2021' data
+quantile_interval_ER_2021 = quantile(geoinkar$ER_2021, probs = seq(0, 1, by = 1/6), na.rm = TRUE)
+
+# Categorize 'ER_2021' data into quantiles
+geoinkar$ER_2021_quantile = cut(geoinkar$ER_2021, breaks = quantile_interval_ER_2021, include.lowest = TRUE)
+
+
+# Create a map visualizing 'ER_2021' data categorized into quantiles
+  ER_2021map_q <- ggplot() +
+    annotation_map_tile(type = "osm", zoom = 6) +  # You may adjust the zoom level as needed
+    geom_sf(data = geoinkar,
+            aes(fill = factor(ER_2021_quantile)),
+            color = "black", size = 0.25) +
+    scale_fill_brewer(palette = "RdBu", direction = -1) +
+    coord_sf(crs = st_crs(geoinkar)) +  # Ensure the CRS is correctly set
+    labs(fill = "Employment Rate (2021)")
+  
+  print(ER_2021map_q)
+@
+\end{subfigure}
+% \caption{Employmemt rate in Germany - 2021}
+\end{figure}
+\end{frame}
+
+
+\begin{frame}{Neighborhood Structure (Spatial dependence)}
+\begin{figure}
+\begin{subfigure}[b]{1\textheight}
+<<plot-spatial-data-neighbors, echo=TRUE, echo=F, fig=T, fig.cap="Plot of the shapefile with neighbors", fig.align='center'>>=
+# Plot the geometries of the shapefile with a grey border
+ggplot() +
+  annotation_map_tile(type = "osm", zoom = 6) +
+  geom_sf(data = krs_sf, color = "grey60") +
+  geom_segment(data = connections, aes(x = from_lon, y = from_lat, xend = to_lon, yend = to_lat),
+               color = "orange") +
+  geom_point(data = points_df, aes(x = longitude, y = latitude),
+             pch = 19, cex=1, color = "black")
+@
+\end{subfigure}
+\end{figure}
+\end{frame}
+
+
+\begin{frame}[fragile]{Correlation Matrix of Numeric Variables}
+\begin{figure}
+\begin{subfigure}[b]{1\textheight}
+<<plot-Correlation-Matrix, echo=F, fig=T, fig.cap="Plot of Correlation Matrix", fig.align='center'>>=
+chart <- ggplot(data = melted_cor_matrix, aes(x=Var1, y=Var2, fill=value)) +
+    geom_tile(color = "white", size = 0.5) +  # Adding white borders for better tile distinction
+    scale_fill_gradient2(low = "#00ccff", high = "#fc8eac", mid = "white", midpoint = 0, limit = c(-1,1), name = "Correlation") +
+    geom_text(aes(label=sprintf("%.2f", value)), color = "black", size = 3.5) +  # Add correlation coefficients on tiles
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1),
+          axis.title.x = element_blank(),
+          axis.title.y = element_blank(),
+          plot.title = element_text(hjust = 0.5)) +
+    labs(title = "Correlation Matrix of Numeric Variables")
+  
+  print(chart)
+@
+\end{subfigure}
+% \caption{Correlation Matrix of Numeric Variables}
+\end{figure}
+\end{frame}
+
+
+\begin{frame}{Descriptive Statistics for Various Variables}
+\begin{table}[ht]
+\centering
+\small 
+\begin{tabular}{@{}lccccccccc@{}}
+\toprule
+Variable & Mean & Median & SD & Min & Max & Q25 & Q75 & Skewness \\ 
+\midrule
+ER   & 4.41 & 4.42 & 0.05 & 4.09 & 4.57 & 4.38 & 4.45 & -0.77 \\
+HEEQ & 3.41 & 3.44 & 0.38 & -2.81 & 4.25 & 3.23 & 3.64 & -4.35 \\
+EKII & 2.12 & 2.15 & 0.74 & -1.47 & 4.04 & 1.71 & 2.61 & -0.63 \\
+HI   & 7.47 & 7.47 & 0.14 & 7.09 & 8.14 & 7.37 & 7.56 & 0.12 \\
+UR   & 1.68 & 1.69 & 0.47 & 0.22 & 2.88 & 1.33 & 2.02 & 0.00 \\
+GDP  & 15.45 & 15.37 & 0.77 & 13.73 & 18.92 & 14.90 & 15.88 & 0.90 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\end{frame}
+
+
+\begin{frame}{OLS Regression Results}
+\begin{table}[ht]
+\centering
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Variable & Estimate & Std. Error & t value & Pr(>|t|) \\ 
+\midrule
+(Intercept) & 3.32 & 0.04 & 75.07 & $<2.00e^{-16}$ *** \\
+HEEQ        & -0.03 & 0.002 & -16.72 & $<2.00e^{-16}$ *** \\
+EKII        & 0.00 & 0.001 & 4.43 & $9.51e^{-6}$ *** \\
+HI          & 0.19 & 0.006 & 31.28 & $<2.00e^{-16}$ *** \\
+UR          & 0.00 & 0.002 & 2.20 & $2.76e^{-2}$ * \\
+GDP         & -0.02 & 0.001 & -19.77 & $<2.00e^{-16}$ *** \\
+\bottomrule
+\end{tabular}
+\bigskip % Adds extra space below the table for additional statistics
+
+\textit{Residual standard error}: 0.042 on 5194 degrees of freedom \\
+\textit{Multiple R-squared}: 0.333, \textit{Adjusted R-squared}: 0.332 \\
+\textit{F-statistic}: 518.1 on 5 and 5194 DF, \textit{p-value}: $<2.2e^{-16}$
+\end{table}
+\end{frame}
+
+
+\begin{frame}{VIF values by year and variable}
+\begin{table}[ht]
+\centering
+\begin{tabular}{ccccccc}
+\toprule
+Year & HEEQ & EKII & HI & UR & GDP \\
+\midrule
+2021 & 1.45 & 1.22 & 2.00 & 2.42 & 1.24 \\
+2020 & 1.08 & 1.19 & 2.02 & 2.12 & 1.20 \\
+2019 & 1.51 & 1.23 & 2.50 & 3.09 & 1.23 \\
+2018 & 1.51 & 1.28 & 2.50 & 3.06 & 1.27 \\
+2017 & 1.47 & 1.26 & 2.19 & 2.75 & 1.23 \\
+2016 & 1.52 & 1.27 & 2.49 & 3.07 & 1.25 \\
+2015 & 1.52 & 1.27 & 2.59 & 3.16 & 1.26 \\
+2014 & 1.49 & 1.28 & 2.60 & 3.06 & 1.29 \\
+2013 & 1.57 & 1.26 & 2.51 & 3.01 & 1.29 \\
+2012 & 1.41 & 1.26 & 2.49 & 2.79 & 1.28 \\
+2011 & 1.09 & 1.26 & 2.33 & 2.38 & 1.19 \\
+2010 & 1.47 & 1.24 & 2.30 & 2.79 & 1.19 \\
+2009 & 1.69 & 1.22 & 2.16 & 3.02 & 1.15 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\end{frame}
+
+
+\begin{frame}{Moran's I Statistics and P-Values by Year}
+\begin{table}[ht]
+\centering
+\begin{tabular}{@{}lccccccccc@{}}
+\toprule
+Year & {Moran's I Statistic} & {P-Value} \\
+\midrule
+2009 & 0.29 & 5.61e-19 \\
+2010 & 0.32 & 5.07e-22 \\
+2011 & 0.34 & 4.46e-26 \\
+2012 & 0.32 & 1.61e-22 \\
+2013 & 0.28 & 3.35e-18 \\
+2014 & 0.28 & 5.60e-18 \\
+2015 & 0.28 & 1.12e-17 \\
+2016 & 0.28 & 2.01e-17 \\
+2017 & 0.25 & 1.17e-14 \\
+2018 & 0.24 & 8.62e-14 \\
+2019 & 0.22 & 6.35e-12 \\
+2020 & 0.19 & 1.66e-09 \\
+2021 & 0.19 & 1.51e-09 \\
+\bottomrule
+\end{tabular}
+\end{table}
+\end{frame}
+
+
+\begin{frame}{Robust LM Diagnostics for Spatial Dependence in OLS Model \parencites{anselin1988}}
+
+\renewcommand{\arraystretch}{1.5}
+\scriptsize
+
+\textbf{Formulas and Hypotheses}
+
+\textit{RLM Lag Test:}
+\[ LM_{\text{lag}} = n \cdot (\hat{\rho}^2) \]
+Where $\hat{\rho}$ is the estimated spatial autoregressive coefficient. \\
+\textbf{Hypotheses:} \\
+$H_0: \rho = 0$ (no spatial lag dependence), \\
+$H_1: \rho \neq 0$ (spatial lag dependence).
+
+\vspace{1em} % Adds vertical space between the text blocks
+
+\textit{RLM Error Test:}
+\[ LM_{\text{error}} = n \cdot (\hat{\lambda}^2) \]
+Where $\hat{\lambda}$ is the estimated coefficient of the spatial error model. \\
+\textbf{Hypotheses:} \\
+$H_0: \lambda = 0$ (no spatial error autocorrelation), \\
+$H_1: \lambda \neq 0$ (spatial error autocorrelation).
+
+\vspace{1em} % Adds vertical space before the table
+
+\textbf{Results}
+\begin{tabular}{@{}lccccccccc@{}}
+\hline
+\textbf{Test} & \textbf{Statistic} & \textbf{df} & \textbf{p-value} \\ 
+\hline
+RLM Lag & 3.585 & 1 & 0.05829 \\
+RLM Error & 24.873 & 1 & 6.12e-07 \\
+\hline
+\end{tabular}
+\vspace{-5mm} % Adjusts space at the bottom of the table
+\end{frame}
+
+
+\begin{frame}{Spatial Lag Model (SLM) and Spatial Error Model (SEM) with individual fixed effects}
+\begin{table}[ht]
+\centering
+\scriptsize 
+\begin{tabular}{l|cc|cc}
+\hline
+& \multicolumn{2}{c|}{\textbf{SLM}} & \multicolumn{2}{c}{\textbf{SEM}} \\
+\textbf{Term} & \textbf{Estimate} & \textbf{Pr(>|t|)} & \textbf{Estimate} & \textbf{Pr(>|t|)} \\ 
+\hline
+\textbf{Spatial Coefficient} & & & & \\
+lambda/rho & 0.526 & < 2.2e-16 *** & 0.535 & < 2.2e-16 *** \\
+\hline
+\textbf{Coefficients} & & & & \\
+HEEQ & -0.002 & 0.013 * & -0.002 & 0.010 * \\
+EKII & 0.003 & 0.022 * & 0.001 & 0.296 \\
+HI & 0.112 & < 2.2e-16 *** & 0.139 & < 2.2e-16 *** \\
+UR & 0.008 & 0.012 * & 0.016 & 3.50e-08 *** \\
+GDP & -0.003 & 0.532 & 0.008 & 0.061 . \\
+wHEEQ & 0.002 & 0.070 . & 0.001 & 0.413 \\
+wEKII & -0.003 & 0.151 & -0.008 & 0.003 ** \\
+wHI & 0.057 & 1.068e-06 *** & 0.163 & < 2.2e-16 *** \\
+wUR & 0.028 & 6.017e-15 *** & 0.046 & < 2.2e-16 *** \\
+wGDP & 0.028 & 5.259e-06 *** & 0.070 & < 2.2e-16 *** \\
+\hline
+\end{tabular}
+\end{table}
+\end{frame}
+
+
+\begin{frame}{Impact Measures and Simulated p-values for the Spatial Lag Model (SLM)}
+\begin{table}[ht]
+\centering
+\begin{tabular}{l|ccc|c}
+\hline
+\textbf{Variable} & \textbf{Direct} & \textbf{Indirect} & \textbf{Total} & \textbf{p-value (Total)} \\ 
+\hline
+HEEQ   & -0.0026 & -0.0025 & -0.0051 & 0.0174 \\
+EKII   & 0.0029  & 0.0028  & 0.0057  & 0.0369 \\
+HI     & 0.1194  & 0.1163  & 0.2357  & < 2.2e-16 \\
+UR     & 0.0083  & 0.0081  & 0.0164  & 0.0083 \\
+GDP    & -0.0029 & -0.0028 & -0.0056 & 0.4777 \\
+wHEEQ  & 0.0024  & 0.0023  & 0.0047  & 0.0640 \\
+wEKII  & -0.0033 & -0.0032 & -0.0064 & 0.1154 \\
+wHI    & 0.0606  & 0.0590  & 0.1196  & 9.37e-07 \\
+wUR    & 0.0295  & 0.0288  & 0.0583  & 1.13e-14 \\
+wGDP   & 0.0297  & 0.0289  & 0.0586  & 1.14e-05 \\
+\hline
+\end{tabular}
+\end{table}
+\end{frame}
+
+
+\begin{frame}{Model Diagnostics}
+\frametitle{Diagnostics for Spatial Models}
+\begin{figure}
+\begin{subfigure}[b]{0.9\textheight}
+<<plot-diagnostics, echo=FALSE, fig=TRUE, fig.cap="Diagnostics for Spatial Models", fig.align='center'>>=
+# Set up the plot area to have 3 rows and 2 columns
+par(mfrow=c(3, 2), mar=c(4, 4, 2, 1))  # Set margins if needed
+
+# Plot residuals for Spatial Lag Model
+plot(residuals(slm_model), type = 'l', main = "Residuals from SLM")
+
+# Plot residuals for Spatial Error Model
+plot(residuals(sem_model), type = 'l', main = "Residuals from SEM")
+
+# Histogram for SLM residuals
+hist(residuals(slm_model), breaks = 30, main = "Histogram of SLM Residuals")
+
+# Histogram for SEM residuals
+hist(residuals(sem_model), breaks = 30, main = "Histogram of SEM Residuals")
+
+# Plotting fitted vs residuals for SLM
+plot(fitted(slm_model), residuals(slm_model), main = "Fitted vs. Residuals for SLM",
+     xlab = "Fitted values", ylab = "Residuals")
+abline(h = 0, col = "red")
+
+# Plotting fitted vs residuals for SEM
+plot(fitted(sem_model), residuals(sem_model), main = "Fitted vs. Residuals for SEM",
+     xlab = "Fitted values", ylab = "Residuals")
+abline(h = 0, col = "blue")
+
+# Resetting graphics parameters back to default
+par(mfrow=c(1, 1), mar=c(5, 3, 3, 2))
+@
+\end{subfigure}
+\end{figure}
+\end{frame}
+
+
+\section{Conclusion}
+\begin{frame}{Summary of Findings and Policy Implications}
+\frametitle{Conclusion}
+
+% Increase the space between lines
+\setlength{\parskip}{1em}  
+
+\textbf{Robustness of Findings:}
+\begin{itemize}
+  \setlength\itemsep{1em}  % Increase space between items
+  \item \textbf{Consistent Variables:} HEEQ, HI, and UR consistently show significant effects across all models.
+  \item \textbf{Spatial Effects:} Both SLM and SEM highlight significant spatial dependencies, underscoring the importance of incorporating spatial econometric techniques.
+  \item \textbf{Household Income (HI):} Emerges as a critical factor, with both direct and spatial spillover effects significantly influencing employment rates.
+\end{itemize}
+
+\end{frame}
+
+
+\begin{frame}{Policy Implications}
+\frametitle{Conclusion}
+
+% Increase the space between lines
+\setlength{\parskip}{1em}  
+
+\textbf{Policy Implications:}
+\begin{itemize}
+  \setlength\itemsep{1em}
+  \item \textbf{Enhancing Education:} Addressing the negative impact of higher education enrollment on employment may involve aligning educational outcomes with market needs.
+  \item \textbf{Supporting Knowledge-Intensive Industries:} Encouraging growth in these sectors can positively influence employment.
+  \item \textbf{Boosting Household Income:} Policies aimed at increasing household income can have substantial direct and spillover benefits for regional employment.
+  \item \textbf{Addressing Unemployment:} Targeted interventions are needed to mitigate structural unemployment and its regional impacts.
+\end{itemize}
+
+\end{frame}
+
+
+% Bibliography
+%%---------------------------------
+\section{Bibliography}
+\begin{frame}{References}
+\small
+\printbibliography
+\end{frame}
+
+
+\end{document}
+
